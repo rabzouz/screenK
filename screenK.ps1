@@ -4,7 +4,9 @@ param (
     [string]$serial,      # Serial de l'appareil (ou IP:port pour TCP/IP)
     [switch]$usb,         # Sélectionner USB
     [switch]$tcpip,       # Sélectionner TCP/IP
-    [string]$ipAddress    # Adresse IP pour connexion manuelle
+    [string]$ipAddress,   # Adresse IP pour connexion manuelle
+    [switch]$mirror,      # Activer le mirroring avec scrcpy
+    [string]$scrcpyArgs = ''  # Arguments optionnels pour scrcpy (ex. : "--bit-rate 8M --audio")
 )
 
 # Vérifier si ADB est disponible
@@ -17,19 +19,27 @@ if (!(Get-Command adb -ErrorAction SilentlyContinue)) {
 function Connect-USB {
     adb devices
     Write-Host "Connexion USB établie."
-    # Ajouter ici du code pour mirroring (ex. : lancer scrcpy si intégré)
 }
 
-# Fonction pour connecter via TCP/IP (inspiré de connection.md)
+# Fonction pour connecter via TCP/IP (améliorée pour extraire correctement l'IP)
 function Connect-TCPIP {
     if ($ipAddress) {
-        adb connect $ipAddress:5555
+        if ($ipAddress -notmatch '\d+\.\d+\.\d+\.\d+') {
+            Write-Error "IP invalide : utilisez un format comme 192.168.1.100"
+            return
+        }
+        adb connect "$ipAddress:5555"
         Write-Host "Connexion TCP/IP à $ipAddress:5555."
     } else {
-        # Méthode automatique : trouver IP via ADB
-        $deviceIp = adb shell ip route | ForEach-Object { if ($_ -match '\d+\.\d+\.\d+\.\d+') { $matches[0] } }
+        # Méthode automatique : extraire l'IP correcte (après 'src') via ADB
+        $routeOutput = adb shell ip route
+        $deviceIp = ($routeOutput | Select-String -Pattern 'src (\d+\.\d+\.\d+\.\d+)') -replace '.*src (\d+\.\d+\.\d+\.\d+).*', '$1'
+        if (-not $deviceIp) {
+            Write-Error "Impossible d'extraire l'IP. Vérifiez la connexion USB et le réseau Wi-Fi. Utilisez -ipAddress manuellement."
+            return
+        }
         adb tcpip 5555
-        adb connect $deviceIp:5555
+        adb connect "$deviceIp:5555"
         Write-Host "Connexion TCP/IP automatique à $deviceIp:5555."
     }
 }
@@ -41,12 +51,22 @@ function Control-Device {
     Write-Host "Touche envoyée : $key"
 }
 
+# Fonction pour démarrer le mirroring avec scrcpy
+function Start-Mirroring {
+    $scrcpyPath = Join-Path $PSScriptRoot 'scrcpy\scrcpy.exe'
+    if (-Not (Test-Path $scrcpyPath)) {
+        Write-Error "scrcpy.exe non trouvé dans $PSScriptRoot\scrcpy. Téléchargez-le depuis github.com/Genymobile/scrcpy."
+        return
+    }
+    $serialOpt = if ($serial) { "--serial=$serial" } elseif ($ipAddress) { "--serial=$ipAddress:5555" } else { '' }
+    & $scrcpyPath $serialOpt $scrcpyArgs
+    Write-Host "Mirroring lancé. Fermez la fenêtre pour arrêter."
+}
+
 # Logique principale
 if ($usb) { Connect-USB }
 elseif ($tcpip) { Connect-TCPIP }
-else { Write-Host "Utilisation : screenK.ps1 -usb ou -tcpip [-ipAddress IP]" }
+else { Write-Host "Utilisation : screenK.ps1 -usb ou -tcpip [-ipAddress IP] [-mirror] [-scrcpyArgs 'args']" }
 
-# Exemple de contrôle
-Control-Device -key "KEYCODE_HOME"
-
-# TODO : Intégrer mirroring vidéo/audio (ex. : appeler scrcpy.exe ou implémenter avec FFmpeg)
+if ($mirror) { Start-Mirroring }
+else { Control-Device -key "KEYCODE_HOME" }
